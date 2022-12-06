@@ -110,6 +110,8 @@ const int program_birth_year = 2003;
 
 #define USE_ONEPASS_SUBTITLE_RENDER 1
 
+#define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
+
 static unsigned sws_flags = SWS_BICUBIC;
 
 typedef struct MyAVPacketList
@@ -324,7 +326,8 @@ typedef struct VideoState
 
 /* options specified by the user */
 static const char *pipe_name;
-static HANDLE hPipe;
+static HANDLE hPipeFFPlayToPcp;
+static HANDLE hPipePcpToFFPlay;
 static const AVInputFormat *file_iformat;
 static const char *input_filename;
 static const char *window_title;
@@ -1434,7 +1437,8 @@ static void do_exit(VideoState *is)
         printf("\n");
     SDL_Quit();
     av_log(NULL, AV_LOG_QUIET, "%s", "");
-    CloseHandle(hPipe);
+    CloseHandle(hPipeFFPlayToPcp);
+    CloseHandle(hPipePcpToFFPlay);
     exit(0);
 }
 
@@ -1957,9 +1961,9 @@ static int get_video_frame(VideoState *is, AVFrame *frame)
     if ((got_picture = decoder_decode_frame(&is->viddec, frame, NULL)) < 0)
         return -1;
 
-
     if (got_picture)
     {
+        frames_received++;
         av_log(NULL, AV_LOG_FATAL, "true\n"); // TODO remove after testing
         double dpts = NAN;
 
@@ -3555,6 +3559,20 @@ static void toggle_audio_display(VideoState *is)
     }
 }
 
+static void copy_int_to_buffer(TCHAR* buf, int value, int offset)
+{
+    buf[offset + 0] = (value >> 24) & 0xFF;
+    buf[offset + 1] = (value >> 16) & 0xFF;
+    buf[offset + 2] = (value >> 8) & 0xFF;
+    buf[offset + 3] = value & 0xFF;
+}
+
+static void copy_values_to_buffer(TCHAR* buf)
+{
+    copy_int_to_buffer(buf, frames_drawn, 2);
+    copy_int_to_buffer(buf, frames_received, 6);
+}
+
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event)
 {
     TCHAR chBuf[128];
@@ -3566,13 +3584,18 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event)
     {
         // handle communication
         // TODO check if we have to move it to own thread?
-        success = ReadFile(hPipe, chBuf, 128, &cbRead, NULL);
-        if (success)
+        success = ReadFile(hPipePcpToFFPlay, chBuf, 128, &cbRead, NULL);
+        av_log(NULL, AV_LOG_FATAL, "Received Data: %d fps\n", cbRead);
+        if (cbRead > 0)
         {
-            av_log(NULL, AV_LOG_FATAL, "Received Data: %d fps\n", chBuf[0]);
-            chBuf[1] = 125;
-            WriteFile(hPipe, chBuf, 128, &cbWritten, NULL);
-            if (chBuf[0] & 1)
+            
+            // TODO  av_dict_set(metadata, "lavfi.ocr.text", result, 0); maybe create own version with limited text size just for timestamp
+            // vf_freezedetect.c / vf_ocr.c
+            draw_x = CHECK_BIT(chBuf[0], 1);
+            av_log(NULL, AV_LOG_FATAL, "Sending data back to KNZ.PCP %d fps\n", chBuf[0]);
+            copy_values_to_buffer(chBuf);
+            WriteFile(hPipeFFPlayToPcp, chBuf, 128, &cbWritten, NULL);
+            if (CHECK_BIT(chBuf[0], 0)) // TODO make simpler?
             {
                 SDL_Event event;
                 av_log(NULL, AV_LOG_FATAL, "Create close event\n");
@@ -3629,16 +3652,35 @@ static void create_pipe()
 {
     DWORD dwMode;
     WINBOOL success;
+    char concatString[48];
     av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", pipe_name);
-    hPipe = CreateFile(pipe_name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    strcpy( concatString, pipe_name );
+    strcat( concatString, "ffplayToPcp" );
+    av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", concatString);
+    hPipeFFPlayToPcp = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 
-    if (hPipe == INVALID_HANDLE_VALUE)
+    if (hPipeFFPlayToPcp == INVALID_HANDLE_VALUE)
     {
         av_log(NULL, AV_LOG_FATAL, "Invalid pipe handle. GLE=%ld\n,", GetLastError());
         return;
     }
     dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
-    success = SetNamedPipeHandleState(hPipe, &dwMode, NULL, NULL);
+    success = SetNamedPipeHandleState(hPipeFFPlayToPcp, &dwMode, NULL, NULL);
+    if (!success)
+        av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
+
+    strcpy( concatString, pipe_name );
+    strcat( concatString, "pcpToFFPlay" );
+    av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", concatString);
+    hPipePcpToFFPlay = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (hPipePcpToFFPlay == INVALID_HANDLE_VALUE)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Invalid pipe handle. GLE=%ld\n,", GetLastError());
+        return;
+    }
+    dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    success = SetNamedPipeHandleState(hPipePcpToFFPlay, &dwMode, NULL, NULL);
     if (!success)
         av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
 }
