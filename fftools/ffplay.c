@@ -31,6 +31,7 @@
 #include <stdint.h>
 
 #include "libavutil/avstring.h"
+#include "libavutil/channel_layout.h"
 #include "libavutil/eval.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/pixdesc.h"
@@ -61,6 +62,8 @@
 #include "cmdutils.h"
 
 #include <assert.h>
+// VideoSoftware
+#include <windows.h>
 
 const char program_name[] = "ffplay";
 const int program_birth_year = 2003;
@@ -108,6 +111,8 @@ const int program_birth_year = 2003;
 #define CURSOR_HIDE_DELAY 1000000
 
 #define USE_ONEPASS_SUBTITLE_RENDER 1
+
+#define CHECK_BIT(var,pos) ((var) & (1<<(pos)))
 
 static unsigned sws_flags = SWS_BICUBIC;
 
@@ -308,6 +313,9 @@ typedef struct VideoState {
 } VideoState;
 
 /* options specified by the user */
+static const char *pipe_name;
+static HANDLE hPipeFFPlayToPcp;
+static HANDLE hPipePcpToFFPlay;
 static AVInputFormat *file_iformat;
 static const char *input_filename;
 static const char *window_title;
@@ -356,6 +364,10 @@ static char *afilters = NULL;
 static int autorotate = 1;
 static int find_stream_info = 1;
 static int filter_nbthreads = 0;
+
+static int draw_x = 0;
+static int frames_received = 0;
+static int frames_drawn = 0;
 
 /* current context */
 static int is_full_screen;
@@ -426,6 +438,7 @@ int64_t get_valid_channel_layout(int64_t channel_layout, int channels)
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
 {
     MyAVPacketList pkt1;
+    int ret;
 
     if (q->abort_request)
        return -1;
@@ -1314,6 +1327,8 @@ static void do_exit(VideoState *is)
         printf("\n");
     SDL_Quit();
     av_log(NULL, AV_LOG_QUIET, "%s", "");
+    CloseHandle(hPipeFFPlayToPcp);
+    CloseHandle(hPipePcpToFFPlay);
     exit(0);
 }
 
@@ -1356,6 +1371,15 @@ static int video_open(VideoState *is)
 
     return 0;
 }
+/* display red X on screen*/
+static void draw_red_x(VideoState *is)
+{    
+    // TODO use drawText filter to write text 
+    
+    SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // window?
+    SDL_RenderDrawLine(renderer, 0,0, is->width, is->height);
+    SDL_RenderDrawLine(renderer, 0, is->height, is->width, 0);
+}
 
 /* display the current picture, if any */
 static void video_display(VideoState *is)
@@ -1369,6 +1393,8 @@ static void video_display(VideoState *is)
         video_audio_display(is);
     else if (is->video_st)
         video_image_display(is);
+    if(draw_x)   
+        draw_red_x(is);
     SDL_RenderPresent(renderer);
 }
 
@@ -1618,6 +1644,9 @@ retry:
             last_duration = vp_duration(is, lastvp, vp);
             delay = compute_target_delay(last_duration, is);
 
+            av_log(NULL, AV_LOG_FATAL, "Current delay=%f\n,", delay); // TODO remove after testing
+
+
             time= av_gettime_relative()/1000000.0;
             if (time < is->frame_timer + delay) {
                 *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
@@ -1775,21 +1804,25 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
 static int get_video_frame(VideoState *is, AVFrame *frame)
 {
     int got_picture;
-
+    av_log(NULL, AV_LOG_FATAL, "Frame"); // TODO remove after testing
     if ((got_picture = decoder_decode_frame(&is->viddec, frame, NULL)) < 0)
         return -1;
 
     if (got_picture) {
+        frames_received++;
+        av_log(NULL, AV_LOG_FATAL, "true\n"); // TODO remove after testing
         double dpts = NAN;
 
         if (frame->pts != AV_NOPTS_VALUE)
             dpts = av_q2d(is->video_st->time_base) * frame->pts;
 
+        av_log(NULL, AV_LOG_FATAL, "timestamp %lld\n",frame->best_effort_timestamp); // TODO remove after testing
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
         if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
             if (frame->pts != AV_NOPTS_VALUE) {
                 double diff = dpts - get_master_clock(is);
+                 av_log(NULL, AV_LOG_FATAL, "diff %f\n",dpts); // TODO remove after testing
                 if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
                     diff - is->frame_last_filter_delay < 0 &&
                     is->viddec.pkt_serial == is->vidclk.serial &&
@@ -3230,10 +3263,50 @@ static void toggle_audio_display(VideoState *is)
     }
 }
 
+static void copy_int_to_buffer(TCHAR* buf, int value, int offset)
+{
+    buf[offset + 0] = (value >> 24) & 0xFF;
+    buf[offset + 1] = (value >> 16) & 0xFF;
+    buf[offset + 2] = (value >> 8) & 0xFF;
+    buf[offset + 3] = value & 0xFF;
+}
+
+static void copy_values_to_buffer(TCHAR* buf)
+{
+    copy_int_to_buffer(buf, frames_drawn, 2);
+    copy_int_to_buffer(buf, frames_received, 6);
+}
+
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
+    TCHAR chBuf[128];
+    DWORD cbRead, cbWritten;
+    WINBOOL success;
     double remaining_time = 0.0;
     SDL_PumpEvents();
     while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
+        // handle communication
+        // TODO check if we have to move it to own thread?
+        success = ReadFile(hPipePcpToFFPlay, chBuf, 128, &cbRead, NULL);
+        av_log(NULL, AV_LOG_FATAL, "Received Data: %d fps\n", cbRead);
+        if (cbRead > 0)
+        {
+            
+            // TODO  av_dict_set(metadata, "lavfi.ocr.text", result, 0); maybe create own version with limited text size just for timestamp
+            // vf_freezedetect.c / vf_ocr.c
+            draw_x = CHECK_BIT(chBuf[0], 1);
+            av_log(NULL, AV_LOG_FATAL, "Sending data back to KNZ.PCP %d fps\n", chBuf[0]);
+            copy_values_to_buffer(chBuf);
+            WriteFile(hPipeFFPlayToPcp, chBuf, 128, &cbWritten, NULL);
+            if (CHECK_BIT(chBuf[0], 0)) // TODO make simpler?
+            {
+                SDL_Event event;
+                av_log(NULL, AV_LOG_FATAL, "Create close event\n");
+                event.type = FF_QUIT_EVENT;
+                event.user.data1 = is;
+                SDL_PushEvent(&event);
+            }
+        }
+        
         if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
             SDL_ShowCursor(0);
             cursor_hidden = 1;
@@ -3274,196 +3347,58 @@ static void seek_chapter(VideoState *is, int incr)
                                  AV_TIME_BASE_Q), 0, 0);
 }
 
+/* create pipe*/
+static void create_pipe()
+{
+    DWORD dwMode;
+    WINBOOL success;
+    char concatString[48];
+    av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", pipe_name);
+    strcpy( concatString, pipe_name );
+    strcat( concatString, "ffplayToPcp" );
+    av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", concatString);
+    hPipeFFPlayToPcp = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (hPipeFFPlayToPcp == INVALID_HANDLE_VALUE)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Invalid pipe handle. GLE=%ld\n,", GetLastError());
+        return;
+    }
+    dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    success = SetNamedPipeHandleState(hPipeFFPlayToPcp, &dwMode, NULL, NULL);
+    if (!success)
+        av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
+
+    strcpy( concatString, pipe_name );
+    strcat( concatString, "pcpToFFPlay" );
+    av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", concatString);
+    hPipePcpToFFPlay = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (hPipePcpToFFPlay == INVALID_HANDLE_VALUE)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Invalid pipe handle. GLE=%ld\n,", GetLastError());
+        return;
+    }
+    dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    success = SetNamedPipeHandleState(hPipePcpToFFPlay, &dwMode, NULL, NULL);
+    if (!success)
+        av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
+}
+
 /* handle an event sent by the GUI */
 static void event_loop(VideoState *cur_stream)
 {
     SDL_Event event;
     double incr, pos, frac;
+    // cmd argument: -pipename \\.\\pipe\\pipe1
+    // connect to pipe
+    create_pipe();
 
     for (;;) {
         double x;
         refresh_loop_wait_event(cur_stream, &event);
         switch (event.type) {
-        case SDL_KEYDOWN:
-            if (exit_on_keydown || event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
-                do_exit(cur_stream);
-                break;
-            }
-            // If we don't yet have a window, skip all key events, because read_thread might still be initializing...
-            if (!cur_stream->width)
-                continue;
-            switch (event.key.keysym.sym) {
-            case SDLK_f:
-                toggle_full_screen(cur_stream);
-                cur_stream->force_refresh = 1;
-                break;
-            case SDLK_p:
-            case SDLK_SPACE:
-                toggle_pause(cur_stream);
-                break;
-            case SDLK_m:
-                toggle_mute(cur_stream);
-                break;
-            case SDLK_KP_MULTIPLY:
-            case SDLK_0:
-                update_volume(cur_stream, 1, SDL_VOLUME_STEP);
-                break;
-            case SDLK_KP_DIVIDE:
-            case SDLK_9:
-                update_volume(cur_stream, -1, SDL_VOLUME_STEP);
-                break;
-            case SDLK_s: // S: Step to next frame
-                step_to_next_frame(cur_stream);
-                break;
-            case SDLK_a:
-                stream_cycle_channel(cur_stream, AVMEDIA_TYPE_AUDIO);
-                break;
-            case SDLK_v:
-                stream_cycle_channel(cur_stream, AVMEDIA_TYPE_VIDEO);
-                break;
-            case SDLK_c:
-                stream_cycle_channel(cur_stream, AVMEDIA_TYPE_VIDEO);
-                stream_cycle_channel(cur_stream, AVMEDIA_TYPE_AUDIO);
-                stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
-                break;
-            case SDLK_t:
-                stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
-                break;
-            case SDLK_w:
-#if CONFIG_AVFILTER
-                if (cur_stream->show_mode == SHOW_MODE_VIDEO && cur_stream->vfilter_idx < nb_vfilters - 1) {
-                    if (++cur_stream->vfilter_idx >= nb_vfilters)
-                        cur_stream->vfilter_idx = 0;
-                } else {
-                    cur_stream->vfilter_idx = 0;
-                    toggle_audio_display(cur_stream);
-                }
-#else
-                toggle_audio_display(cur_stream);
-#endif
-                break;
-            case SDLK_PAGEUP:
-                if (cur_stream->ic->nb_chapters <= 1) {
-                    incr = 600.0;
-                    goto do_seek;
-                }
-                seek_chapter(cur_stream, 1);
-                break;
-            case SDLK_PAGEDOWN:
-                if (cur_stream->ic->nb_chapters <= 1) {
-                    incr = -600.0;
-                    goto do_seek;
-                }
-                seek_chapter(cur_stream, -1);
-                break;
-            case SDLK_LEFT:
-                incr = seek_interval ? -seek_interval : -10.0;
-                goto do_seek;
-            case SDLK_RIGHT:
-                incr = seek_interval ? seek_interval : 10.0;
-                goto do_seek;
-            case SDLK_UP:
-                incr = 60.0;
-                goto do_seek;
-            case SDLK_DOWN:
-                incr = -60.0;
-            do_seek:
-                    if (seek_by_bytes) {
-                        pos = -1;
-                        if (pos < 0 && cur_stream->video_stream >= 0)
-                            pos = frame_queue_last_pos(&cur_stream->pictq);
-                        if (pos < 0 && cur_stream->audio_stream >= 0)
-                            pos = frame_queue_last_pos(&cur_stream->sampq);
-                        if (pos < 0)
-                            pos = avio_tell(cur_stream->ic->pb);
-                        if (cur_stream->ic->bit_rate)
-                            incr *= cur_stream->ic->bit_rate / 8.0;
-                        else
-                            incr *= 180000.0;
-                        pos += incr;
-                        stream_seek(cur_stream, pos, incr, 1);
-                    } else {
-                        pos = get_master_clock(cur_stream);
-                        if (isnan(pos))
-                            pos = (double)cur_stream->seek_pos / AV_TIME_BASE;
-                        pos += incr;
-                        if (cur_stream->ic->start_time != AV_NOPTS_VALUE && pos < cur_stream->ic->start_time / (double)AV_TIME_BASE)
-                            pos = cur_stream->ic->start_time / (double)AV_TIME_BASE;
-                        stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
-                    }
-                break;
-            default:
-                break;
-            }
-            break;
-        case SDL_MOUSEBUTTONDOWN:
-            if (exit_on_mousedown) {
-                do_exit(cur_stream);
-                break;
-            }
-            if (event.button.button == SDL_BUTTON_LEFT) {
-                static int64_t last_mouse_left_click = 0;
-                if (av_gettime_relative() - last_mouse_left_click <= 500000) {
-                    toggle_full_screen(cur_stream);
-                    cur_stream->force_refresh = 1;
-                    last_mouse_left_click = 0;
-                } else {
-                    last_mouse_left_click = av_gettime_relative();
-                }
-            }
-        case SDL_MOUSEMOTION:
-            if (cursor_hidden) {
-                SDL_ShowCursor(1);
-                cursor_hidden = 0;
-            }
-            cursor_last_shown = av_gettime_relative();
-            if (event.type == SDL_MOUSEBUTTONDOWN) {
-                if (event.button.button != SDL_BUTTON_RIGHT)
-                    break;
-                x = event.button.x;
-            } else {
-                if (!(event.motion.state & SDL_BUTTON_RMASK))
-                    break;
-                x = event.motion.x;
-            }
-                if (seek_by_bytes || cur_stream->ic->duration <= 0) {
-                    uint64_t size =  avio_size(cur_stream->ic->pb);
-                    stream_seek(cur_stream, size*x/cur_stream->width, 0, 1);
-                } else {
-                    int64_t ts;
-                    int ns, hh, mm, ss;
-                    int tns, thh, tmm, tss;
-                    tns  = cur_stream->ic->duration / 1000000LL;
-                    thh  = tns / 3600;
-                    tmm  = (tns % 3600) / 60;
-                    tss  = (tns % 60);
-                    frac = x / cur_stream->width;
-                    ns   = frac * tns;
-                    hh   = ns / 3600;
-                    mm   = (ns % 3600) / 60;
-                    ss   = (ns % 60);
-                    av_log(NULL, AV_LOG_INFO,
-                           "Seek to %2.0f%% (%2d:%02d:%02d) of total duration (%2d:%02d:%02d)       \n", frac*100,
-                            hh, mm, ss, thh, tmm, tss);
-                    ts = frac * cur_stream->ic->duration;
-                    if (cur_stream->ic->start_time != AV_NOPTS_VALUE)
-                        ts += cur_stream->ic->start_time;
-                    stream_seek(cur_stream, ts, 0, 0);
-                }
-            break;
-        case SDL_WINDOWEVENT:
-            switch (event.window.event) {
-                case SDL_WINDOWEVENT_SIZE_CHANGED:
-                    screen_width  = cur_stream->width  = event.window.data1;
-                    screen_height = cur_stream->height = event.window.data2;
-                    if (cur_stream->vis_texture) {
-                        SDL_DestroyTexture(cur_stream->vis_texture);
-                        cur_stream->vis_texture = NULL;
-                    }
-                case SDL_WINDOWEVENT_EXPOSED:
-                    cur_stream->force_refresh = 1;
-            }
-            break;
+        
         case SDL_QUIT:
         case FF_QUIT_EVENT:
             do_exit(cur_stream);
@@ -3554,6 +3489,8 @@ static void opt_input_file(void *optctx, const char *filename)
     }
     if (!strcmp(filename, "-"))
         filename = "pipe:";
+        
+    filename = "rtsp://admin:admin6883@192.168.121.48:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif";
     input_filename = filename;
 }
 
@@ -3616,6 +3553,7 @@ static const OptionDef options[] = {
     { "framedrop", OPT_BOOL | OPT_EXPERT, { &framedrop }, "drop frames when cpu is too slow", "" },
     { "infbuf", OPT_BOOL | OPT_EXPERT, { &infinite_buffer }, "don't limit the input buffer size (useful with realtime streams)", "" },
     { "window_title", OPT_STRING | HAS_ARG, { &window_title }, "set window title", "window title" },
+    { "pipename", OPT_STRING | HAS_ARG, {&pipe_name}, "set pipe name"},
     { "left", OPT_INT | HAS_ARG | OPT_EXPERT, { &screen_left }, "set the x position for the left of the window", "x pos" },
     { "top", OPT_INT | HAS_ARG | OPT_EXPERT, { &screen_top }, "set the y position for the top of the window", "y pos" },
 #if CONFIG_AVFILTER
