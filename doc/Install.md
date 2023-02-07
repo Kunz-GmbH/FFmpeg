@@ -19,8 +19,9 @@ pacman -Suy
 
 add C:\msys64\mingw64\bin to path
 
-execute ./confgure in ffmpeg source dir
-make
+final commands
+execute './configure --enable-static --enable-gpl --disable-w32threads --disable-autodetect --prefix=/c/ffmpeg/DLLS' in ffmpeg source dir
+make install
 
 full Build: 
     --enable-gpl --enable-version3 --enable-shared --disable-w32threads --disable-autodetect --enable-fontconfig  --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-libbluray --enable-libcaca --enable-sdl2 --enable-libdav1d --enable-libzvbi --enable-librav1e --enable-libsvtav1 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxvid --enable-libaom --enable-libopenjpeg --enable-libvpx --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-ffnvcodec --enable-nvdec --enable-nvenc --enable-d3d11va --enable-dxva2 --enable-libmfx --enable-libglslang --enable-vulkan --enable-opencl --enable-libcdio --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libilbc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint
@@ -38,6 +39,15 @@ get_video_frame
 reconnect? simple just restart connection
 
 
+Dahua url:
+http://host:port/cgi-bin/mjpg/video.cgi?channel=1&subtype=1
+rtsp://IPADDRESS:554//cam/realmonitor
+rtsp://192.168.1.100:554/cam/realmonitor?channel=1&subtype=0
+
+
+-vf setpts=0 
+
+
 Testing:
 docker run --rm -it -e RTSP_PROTOCOLS=tcp -p 8554:8554 -p 1935:1935 -p 8888:8888 aler9/rtsp-simple-server
 ./ffmpeg -f gdigrab -framerate 30 -i desktop -f rtsp rtsp://localhost:8554/mystream
@@ -45,3 +55,31 @@ docker run --rm -it -e RTSP_PROTOCOLS=tcp -p 8554:8554 -p 1935:1935 -p 8888:8888
 
 .\ffplay.exe rtsp://localhost:8554/mystream -pipename \\.\\pipe\\pipe1 -x 400 -y 200 -left 50 -top 50 -noborder
 .\ffplay.exe "rtsp://admin:admin6883@192.168.121.48:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -pipename \\.\\pipe\\pipe1 -x 400 -y 200 -left 50 -top 50 -noborder
+
+.\ffplay.exe -fflags nobuffer -flags low_delay -framedrop -strict experimental -rtsp_transport tcp -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -pipename \\.\\pipe\\pipe1 -x 600 -y 400 -left 50 -top 50
+
+
+ .\ffplay.exe -an -sn -noborder -fflags nobuffer -fflags discardcorrupt -flags low_delay -framedrop -avioflags direct -sync ext -strict experimental -probesize 32 -analyzeduration 0 -rtsp_transport tcp "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -pipename \\.\\pipe\\pipe1 -x 600 -y 400 -left 50 -top 50
+
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -pipename \\.\\pipe\\pipe1 -x 600 -y 400 -left 50 -top 50.\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -pipename \\.\\pipe\\pipe1 -x 600 -y 400 -left 50 -top 50
+  
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 600 -y 400 -left 50 -top 50
+  
+  gut:
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 600 -y 400 -left 50 -top 50 -codec:v h264 -fast -framedrop -infbuf
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 2600 -top 400 -codec:v h264 -fast -framedrop -infbuf -noborder
+  
+  
+  
+  test
+   .\ffplay.exe -an -sn -noborder -fflags nobuffer -fflags discardcorrupt -flags low_delay -framedrop -avioflags direct -sync ext -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 2600 -top 400 -fast -framedrop -infbuf
+  .\ffplay.exe -noborder -fflags nobuffer -fflags discardcorrupt -flags low_delay -avioflags direct -strict experimental -probesize 32 -analyzeduration 0 -rtsp_transport tcp "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 2600 -top 400 -fast -framedrop -infbuf
+
+  
+  run:
+  
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.12:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 0 -top 0 -codec:v h264 -fast -framedrop -infbuf -noborder
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.13:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 3000 -top 000 -codec:v h264 -fast -framedrop -infbuf -noborder
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.14:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 1400 -top 900 -codec:v h264 -fast -framedrop -infbuf -noborder
+  .\ffplay.exe -fflags nobuffer -flags low_delay -strict experimental -probesize 32 -analyzeduration 0 "rtsp://admin:admin6883@192.168.120.15:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif" -x 1200 -y 800 -left 2600 -top 900 -codec:v h264 -fast -framedrop -infbuf -noborder
+  

@@ -368,6 +368,7 @@ static int filter_nbthreads = 0;
 static int draw_x = 0;
 static int frames_received = 0;
 static int frames_drawn = 0;
+static int pcpDataReceived = 0;
 
 /* current context */
 static int is_full_screen;
@@ -1396,6 +1397,7 @@ static void video_display(VideoState *is)
     if(draw_x)   
         draw_red_x(is);
     SDL_RenderPresent(renderer);
+    frames_drawn++;
 }
 
 static double get_clock(Clock *c)
@@ -1804,25 +1806,25 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
 static int get_video_frame(VideoState *is, AVFrame *frame)
 {
     int got_picture;
-    av_log(NULL, AV_LOG_FATAL, "Frame"); // TODO remove after testing
+  //  av_log(NULL, AV_LOG_FATAL, "Frame"); // TODO remove after testing
     if ((got_picture = decoder_decode_frame(&is->viddec, frame, NULL)) < 0)
         return -1;
 
     if (got_picture) {
         frames_received++;
-        av_log(NULL, AV_LOG_FATAL, "true\n"); // TODO remove after testing
+      //  av_log(NULL, AV_LOG_FATAL, "true\n"); // TODO remove after testing
         double dpts = NAN;
 
         if (frame->pts != AV_NOPTS_VALUE)
             dpts = av_q2d(is->video_st->time_base) * frame->pts;
 
-        av_log(NULL, AV_LOG_FATAL, "timestamp %lld\n",frame->best_effort_timestamp); // TODO remove after testing
+       // av_log(NULL, AV_LOG_FATAL, "timestamp %lld\n",frame->best_effort_timestamp); // TODO remove after testing
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
         if (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
             if (frame->pts != AV_NOPTS_VALUE) {
                 double diff = dpts - get_master_clock(is);
-                 av_log(NULL, AV_LOG_FATAL, "diff %f\n",dpts); // TODO remove after testing
+                 // av_log(NULL, AV_LOG_FATAL, "diff %f\n",dpts); // TODO remove after testing
                 if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
                     diff - is->frame_last_filter_delay < 0 &&
                     is->viddec.pkt_serial == is->vidclk.serial &&
@@ -3284,28 +3286,7 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
     SDL_PumpEvents();
     while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
-        // handle communication
-        // TODO check if we have to move it to own thread?
-        success = ReadFile(hPipePcpToFFPlay, chBuf, 128, &cbRead, NULL);
-        av_log(NULL, AV_LOG_FATAL, "Received Data: %d fps\n", cbRead);
-        if (cbRead > 0)
-        {
-            
-            // TODO  av_dict_set(metadata, "lavfi.ocr.text", result, 0); maybe create own version with limited text size just for timestamp
-            // vf_freezedetect.c / vf_ocr.c
-            draw_x = CHECK_BIT(chBuf[0], 1);
-            av_log(NULL, AV_LOG_FATAL, "Sending data back to KNZ.PCP %d fps\n", chBuf[0]);
-            copy_values_to_buffer(chBuf);
-            WriteFile(hPipeFFPlayToPcp, chBuf, 128, &cbWritten, NULL);
-            if (CHECK_BIT(chBuf[0], 0)) // TODO make simpler?
-            {
-                SDL_Event event;
-                av_log(NULL, AV_LOG_FATAL, "Create close event\n");
-                event.type = FF_QUIT_EVENT;
-                event.user.data1 = is;
-                SDL_PushEvent(&event);
-            }
-        }
+       
         
         if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
             SDL_ShowCursor(0);
@@ -3346,7 +3327,51 @@ static void seek_chapter(VideoState *is, int incr)
     stream_seek(is, av_rescale_q(is->ic->chapters[i]->start, is->ic->chapters[i]->time_base,
                                  AV_TIME_BASE_Q), 0, 0);
 }
+static int communication_thread(void *arg){
+    VideoState *is = arg;
+    TCHAR chBuf[128];
+    DWORD cbRead, cbWritten;
+    WINBOOL success;
+    double remaining_time = 0.0;
+    for (;;) {
+ // handle communication
+        // TODO check if we have to move it to own thread?
+        success = ReadFile(hPipePcpToFFPlay, chBuf, 128, &cbRead, NULL);        
+        av_log(NULL, AV_LOG_FATAL, "New loop\n");
+        
+        if (cbRead > 0)
+        {
+            pcpDataReceived++;
+            av_log(NULL, AV_LOG_FATAL, "Received Data: %ld byte\n", cbRead);
+            av_log(NULL, AV_LOG_FATAL, "FramesReceived: %d\n", frames_received);
+            av_log(NULL, AV_LOG_FATAL, "FramesDrawn: %d\n", frames_drawn);
+            av_log(NULL, AV_LOG_FATAL, "DataReceivedCount: %d\n", pcpDataReceived);
+            
+            // TODO  av_dict_set(metadata, "lavfi.ocr.text", result, 0); maybe create own version with limited text size just for timestamp
+            // vf_freezedetect.c / vf_ocr.c
+            draw_x = CHECK_BIT(chBuf[0], 1);
 
+            copy_int_to_buffer(chBuf, frames_received, 2);
+            copy_int_to_buffer(chBuf, frames_drawn, 6);
+
+          //  av_log(NULL, AV_LOG_FATAL, "Sending data back to KNZ.PCP %d fps\n", chBuf[0]);            
+
+            success = WriteFile(hPipeFFPlayToPcp, chBuf, 128, &cbWritten, NULL);
+            av_log(NULL, AV_LOG_FATAL, "Sending was successful: %d\n", success);
+
+            if (CHECK_BIT(chBuf[0], 0)) // TODO make simpler?
+            {
+                SDL_Event event;
+                av_log(NULL, AV_LOG_FATAL, "Create close event\n");
+                event.type = FF_QUIT_EVENT;
+                event.user.data1 = is;
+                SDL_PushEvent(&event);
+            }
+        }
+        SDL_Delay(10);
+    }
+    return 0;
+}
 /* create pipe*/
 static void create_pipe()
 {
@@ -3365,6 +3390,7 @@ static void create_pipe()
         return;
     }
     dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+   // dwMode = PIPE_READMODE_MESSAGE | PIPE_NOWAIT;
     success = SetNamedPipeHandleState(hPipeFFPlayToPcp, &dwMode, NULL, NULL);
     if (!success)
         av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
@@ -3380,6 +3406,7 @@ static void create_pipe()
         return;
     }
     dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+   // dwMode = PIPE_READMODE_MESSAGE | PIPE_NOWAIT;
     success = SetNamedPipeHandleState(hPipePcpToFFPlay, &dwMode, NULL, NULL);
     if (!success)
         av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
@@ -3393,7 +3420,7 @@ static void event_loop(VideoState *cur_stream)
     // cmd argument: -pipename \\.\\pipe\\pipe1
     // connect to pipe
     create_pipe();
-
+    SDL_CreateThread(communication_thread, "communication", cur_stream);
     for (;;) {
         double x;
         refresh_loop_wait_event(cur_stream, &event);
@@ -3489,8 +3516,7 @@ static void opt_input_file(void *optctx, const char *filename)
     }
     if (!strcmp(filename, "-"))
         filename = "pipe:";
-        
-    filename = "rtsp://admin:admin6883@192.168.121.48:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif";
+
     input_filename = filename;
 }
 
