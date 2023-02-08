@@ -3329,13 +3329,12 @@ static void seek_chapter(VideoState *is, int incr)
 }
 static int communication_thread(void *arg){
     VideoState *is = arg;
-    TCHAR chBuf[128];
+    byte chBuf[128];
     DWORD cbRead, cbWritten;
     WINBOOL success;
     double remaining_time = 0.0;
     for (;;) {
  // handle communication
-        // TODO check if we have to move it to own thread?
         success = ReadFile(hPipePcpToFFPlay, chBuf, 128, &cbRead, NULL);        
         av_log(NULL, AV_LOG_FATAL, "New loop\n");
         
@@ -3358,6 +3357,7 @@ static int communication_thread(void *arg){
 
             success = WriteFile(hPipeFFPlayToPcp, chBuf, 128, &cbWritten, NULL);
             av_log(NULL, AV_LOG_FATAL, "Sending was successful: %d\n", success);
+            av_log(NULL, AV_LOG_FATAL, "Written Bytes: %ld byte\n", cbWritten);
 
             if (CHECK_BIT(chBuf[0], 0)) // TODO make simpler?
             {
@@ -3368,7 +3368,7 @@ static int communication_thread(void *arg){
                 SDL_PushEvent(&event);
             }
         }
-        SDL_Delay(10);
+        SDL_Delay(5);
     }
     return 0;
 }
@@ -3376,40 +3376,23 @@ static int communication_thread(void *arg){
 static void create_pipe()
 {
     DWORD dwMode;
-    WINBOOL success;
     char concatString[48];
     av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", pipe_name);
     strcpy( concatString, pipe_name );
     strcat( concatString, "ffplayToPcp" );
     av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", concatString);
-    hPipeFFPlayToPcp = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 
+    hPipeFFPlayToPcp = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (hPipeFFPlayToPcp == INVALID_HANDLE_VALUE)
-    {
         av_log(NULL, AV_LOG_FATAL, "Invalid pipe handle. GLE=%ld\n,", GetLastError());
-        return;
-    }
-    dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
-   // dwMode = PIPE_READMODE_MESSAGE | PIPE_NOWAIT;
-    success = SetNamedPipeHandleState(hPipeFFPlayToPcp, &dwMode, NULL, NULL);
-    if (!success)
-        av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
 
     strcpy( concatString, pipe_name );
     strcat( concatString, "pcpToFFPlay" );
     av_log(NULL, AV_LOG_FATAL, "pipe name: %s\n", concatString);
-    hPipePcpToFFPlay = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 
+    hPipePcpToFFPlay = CreateFile(concatString, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (hPipePcpToFFPlay == INVALID_HANDLE_VALUE)
-    {
         av_log(NULL, AV_LOG_FATAL, "Invalid pipe handle. GLE=%ld\n,", GetLastError());
-        return;
-    }
-    dwMode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
-   // dwMode = PIPE_READMODE_MESSAGE | PIPE_NOWAIT;
-    success = SetNamedPipeHandleState(hPipePcpToFFPlay, &dwMode, NULL, NULL);
-    if (!success)
-        av_log(NULL, AV_LOG_FATAL, "Error setting pipe state\n");
 }
 
 /* handle an event sent by the GUI */
@@ -3419,8 +3402,7 @@ static void event_loop(VideoState *cur_stream)
     double incr, pos, frac;
     // cmd argument: -pipename \\.\\pipe\\pipe1
     // connect to pipe
-    create_pipe();
-    SDL_CreateThread(communication_thread, "communication", cur_stream);
+    
     for (;;) {
         double x;
         refresh_loop_wait_event(cur_stream, &event);
@@ -3676,7 +3658,7 @@ int main(int argc, char **argv)
                "Use -h to get full help or, even better, run 'man %s'\n", program_name);
         exit(1);
     }
-
+    
     if (display_disable) {
         video_disable = 1;
     }
@@ -3698,7 +3680,7 @@ int main(int argc, char **argv)
     }
 
     SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
-    SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
+    SDL_EventState(SDL_USEREVENT, SDL_IGNORE);    
 
     if (!display_disable) {
         int flags = SDL_WINDOW_HIDDEN;
@@ -3736,6 +3718,9 @@ int main(int argc, char **argv)
         av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
         do_exit(NULL);
     }
+
+    create_pipe();
+    SDL_CreateThread(communication_thread, "communication", is);
 
     event_loop(is);
 
