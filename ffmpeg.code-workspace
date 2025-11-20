@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"makefile.launchConfigurations": [
+			{
+				"cwd": "/home/leaf/devops/ffmpeg",
+				"binaryPath": "/home/leaf/devops/ffmpeg/ffprobe_g",
+				"binaryArgs": []
+			}
+		],
+		"files.associations": {
+			"chrono": "c"
+		}
+	}
+}

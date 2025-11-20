@@ -1,0 +1,38 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(gdb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/ffmpeg",
+            // ./configure --enable-debug=3 --disable-optimizations --disable-stripping --disable-doc --disable-ffplay --disable-ffprobe
+            "preLaunchTask": "Make: build",
+            "args": [
+                "-y",
+                "-t",
+                "5",
+                "-i",
+                "rtsp://admin:YOU_WANT_TO_CHANGE_THIS@172.31.30.35:554/cam/realmonitor\\?channel=1\\&subtype=0\\&unicast=true\\&proto=Onvif",
+                "/tmp/tst.mp4"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "Set Disassembly Flavor to Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

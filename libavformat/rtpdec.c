@@ -34,6 +34,8 @@
 #include "rtpdec.h"
 #include "rtpdec_formats.h"
 #include "internal.h"
+#include <inttypes.h>
+#include "time.h"
 
 #define MIN_FEEDBACK_INTERVAL 200000 /* 200 ms in us */
 
@@ -654,12 +656,51 @@ static void finalize_packet(RTPDemuxContext *s, AVPacket *pkt, uint32_t timestam
         /* compute pts from timestamp with received ntp_time */
         /* Cast to int32_t to handle timestamp wraparound correctly */
         delta_timestamp = (int32_t)(timestamp - s->last_sr.rtp_timestamp);
+        
         /* convert to the PTS timebase */
-        addend = av_rescale(s->last_sr.ntp_timestamp - s->first_rtcp_ntp_time,
+        int64_t delta_ntp = s->last_sr.ntp_timestamp - s->first_rtcp_ntp_time;
+        addend = av_rescale(delta_ntp,
                             s->st->time_base.den,
                             (uint64_t) s->st->time_base.num << 32);
         pkt->pts = s->range_start_offset + s->rtcp_ts_offset + addend +
                    delta_timestamp;
+
+        /* Experiment with ntp timestamps (64bit fixed precission, see https://en.wikipedia.org/wiki/Network_Time_Protocol#Timestamps), */
+        /* unix timestamps (1900 vs. 1970), presentationTimeStamps (s->st->time_base) and timespec_get() for local time with milli-/nanoseconds */
+        /**/
+        /****************************************** Distilled: ****************************************/ 
+        /* The NTP timestamp is only sporadically transmitted */
+        /* Codec and muxer (might) add additional timestamps, some of them end up beeing negative */
+        /**/
+        /* Likewise to the relative PTS (i.e. starting at 0s) above */
+        /* it should be possible to recaluate a corresponding ntp timestamp as a "true" source time of the frame */
+        /* Comparing that with the current time should allow for an aproximation of the latency */
+        /**/
+        /* Obviously NTP synchronism is required for that to work */
+
+        struct timespec ts;
+        time_t ntp_time, nsec;      
+        timespec_get(&ts, TIME_UTC);
+        nsec = ts.tv_nsec;                   
+
+        struct tm now_info, ntp_info;
+        time_t now = time(NULL);
+        localtime_r(&now, &now_info);
+
+        int64_t ntp_nsec = 999999000;//(s->first_rtcp_ntp_time & 0x00000000ffffffff); // WRONG, because fraction (add/sumable), NOT int
+        ntp_time = ((s->first_rtcp_ntp_time + delta_ntp) >> 32) - 2208988800;
+        // ntp_time+= delta_timestamp; // WRONG, need be in PTS timebase (s->st->time_base)
+
+        char current_time_buffer[37];
+        strftime(current_time_buffer, sizeof(current_time_buffer), "%Y-%m-%d %H:%M:%S", &now_info);
+
+        localtime_r(&ntp_time, &ntp_info);
+        char first_time_buffer[37];
+        strftime(first_time_buffer, sizeof(first_time_buffer), "%Y-%m-%d %H:%M:%S", &ntp_info);
+
+        // printf("NTP-FirstTS is: %" PRIu64 "\n", s->first_rtcp_ntp_time);
+        printf("FirstTime %s.%06d | Time: %s.%06d | \n", first_time_buffer, ntp_nsec/1000, current_time_buffer, nsec/1000);
+
         return;
     }
 
